@@ -11,6 +11,12 @@ import glob
 import yaml
 import importlib
 
+# Use the libyaml based loader when PyYAML has been built with it (much faster)
+try:
+    _YamlLoader = yaml.CSafeLoader
+except AttributeError:  # pragma: no cover
+    _YamlLoader = yaml.SafeLoader
+
 
 class BaseMigrationScript(object):
     _TEXT_REPLACES = {}
@@ -90,7 +96,7 @@ class BaseMigrationScript(object):
             )
             for filename in glob.glob(file_pattern):
                 with open(filename) as f:
-                    new_rules = yaml.safe_load(f)
+                    new_rules = yaml.load(f, Loader=_YamlLoader)
                     if rules[rule]["type"] == TYPE_DICT_OF_DICT:
                         for f_type, data in new_rules.items():
                             if f_type not in rules[rule]["doc"]:
