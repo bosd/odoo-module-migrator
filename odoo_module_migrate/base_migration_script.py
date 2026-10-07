@@ -25,7 +25,32 @@ class BaseMigrationScript(object):
     _GLOBAL_FUNCTIONS = []  # [function_object]
     _module_path = ""
 
+    def __init__(self):
+        # Work on per-instance copies: the class-level containers are shared
+        # between all scripts (and between runs) and must never be mutated.
+        for attr in ("_TEXT_REPLACES", "_TEXT_ERRORS", "_TEXT_WARNINGS"):
+            setattr(
+                self,
+                attr,
+                {k: dict(v or {}) for k, v in getattr(self, attr).items()},
+            )
+        for attr in (
+            "_DEPRECATED_MODULES",
+            "_REMOVED_FIELDS",
+            "_RENAMED_FIELDS",
+            "_RENAMED_MODELS",
+            "_REMOVED_MODELS",
+            "_GLOBAL_FUNCTIONS",
+        ):
+            setattr(self, attr, list(getattr(self, attr)))
+        self._FILE_RENAMES = dict(self._FILE_RENAMES)
+        self._rules_parsed = False
+        self._patterns_by_extension = {}
+
     def parse_rules(self):
+        if self._rules_parsed:
+            return
+        self._rules_parsed = True
         script_parts = inspect.getfile(self.__class__).split("/")
         migrate_from_to = script_parts[-1].split(".")[0]
         migration_scripts_dir = "/".join(script_parts[:-1])
@@ -136,6 +161,47 @@ class BaseMigrationScript(object):
                 if not name.startswith("_"):
                     self._GLOBAL_FUNCTIONS.append(value)
 
+        self._removed_fields = self.handle_removed_fields(self._REMOVED_FIELDS)
+        self._renamed_fields = self.handle_renamed_fields(self._RENAMED_FIELDS)
+        self._renamed_models = self.handle_renamed_models(self._RENAMED_MODELS)
+        self._removed_models = self.handle_removed_models(self._REMOVED_MODELS)
+
+    def _get_patterns(self, extension):
+        """Return the compiled (replaces, errors, warnings) to apply on files
+        with the given extension. Computed once per extension."""
+        if extension in self._patterns_by_extension:
+            return self._patterns_by_extension[extension]
+
+        renamed_models = self._renamed_models
+        removed_models = self._removed_models
+        replaces = {
+            **self._TEXT_REPLACES.get("*", {}),
+            **self._TEXT_REPLACES.get(extension, {}),
+            **renamed_models["replaces"],
+            **removed_models["replaces"],
+        }
+        errors = {
+            **self._TEXT_ERRORS.get("*", {}),
+            **self._TEXT_ERRORS.get(extension, {}),
+            **renamed_models["errors"],
+            **removed_models["errors"],
+        }
+        warnings = {
+            **self._TEXT_WARNINGS.get("*", {}),
+            **self._TEXT_WARNINGS.get(extension, {}),
+            **self._removed_fields["warnings"],
+            **self._renamed_fields["warnings"],
+            **renamed_models["warnings"],
+            **removed_models["warnings"],
+        }
+        patterns = (
+            {re.compile(k): v for k, v in replaces.items()},
+            [(re.compile(k), v) for k, v in errors.items()],
+            [(re.compile(k), v) for k, v in warnings.items()],
+        )
+        self._patterns_by_extension[extension] = patterns
+        return patterns
+
     def run(
         self,
         module_path,
@@ -198,39 +264,21 @@ class BaseMigrationScript(object):
             )
             absolute_file_path = os.path.join(root, new_name)
 
-        removed_fields = self.handle_removed_fields(self._REMOVED_FIELDS)
-        renamed_fields = self.handle_renamed_fields(self._RENAMED_FIELDS)
-        renamed_models = self.handle_renamed_models(self._RENAMED_MODELS)
-        removed_models = self.handle_removed_models(self._REMOVED_MODELS)
+        replaces, errors, warnings = self._get_patterns(extension)
 
         # Operate changes in the file (replacements, removals)
-        replaces = self._TEXT_REPLACES.get("*", {})
-        replaces.update(self._TEXT_REPLACES.get(extension, {}))
-        replaces.update(renamed_models.get("replaces"))
-        replaces.update(removed_models.get("replaces"))
-
         new_text = tools._replace_in_file(
             absolute_file_path, replaces, "Change file content of %s" % filename
         )
 
         # Display errors if the new content contains some obsolete
         # pattern
-        errors = self._TEXT_ERRORS.get("*", {})
-        errors.update(self._TEXT_ERRORS.get(extension, {}))
-        errors.update(renamed_models.get("errors"))
-        errors.update(removed_models.get("errors"))
-        for pattern, error_message in errors.items():
-            if re.findall(pattern, new_text):
+        for pattern, error_message in errors:
+            if pattern.search(new_text):
                 logger.error(error_message + "\nFile " + os.path.join(root, filename))
 
-        warnings = self._TEXT_WARNINGS.get("*", {})
-        warnings.update(self._TEXT_WARNINGS.get(extension, {}))
-        warnings.update(removed_fields.get("warnings"))
-        warnings.update(renamed_fields.get("warnings"))
-        warnings.update(renamed_models.get("warnings"))
-        warnings.update(removed_models.get("warnings"))
-        for pattern, warning_message in warnings.items():
-            if re.findall(pattern, new_text):
+        for pattern, warning_message in warnings:
+            if pattern.search(new_text):
                 logger.warning(warning_message + ". File " + root + os.sep + filename)
 
     def handle_removed_fields(self, removed_fields):
