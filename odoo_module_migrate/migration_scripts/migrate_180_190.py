@@ -85,25 +85,69 @@ def upgrade_sql_constraints(
     )
     ind = " " * 4
 
+    def unwrap_translation(node):
+        """`_("...")` and `_lt("...")` become "...": the message of
+        `models.Constraint` is translated by Odoo itself."""
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("_", "_lt")
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            return node.args[0]
+        return node
+
+    def parse_constraints(source):
+        constraints = []
+        for element in ast.parse(source, mode="eval").body.elts:
+            name, definition, *messages = [
+                unwrap_translation(item) for item in element.elts
+            ]
+            if not (isinstance(name, ast.Constant) and isinstance(name.value, str)):
+                raise ValueError("constraint name is not a string")
+            message = messages[0] if messages else None
+            constraints.append((name.value, definition, message))
+        return constraints
+
+    def is_str(node):
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
     # Function to build the new SQL constraint definition
     def build_sql_object(match):
         # Preserve the original indentation level (e.g., 2 spaces, 4 spaces, 8 spaces for nested classes)
         leading_indent = match.group(1)
-        constraints = ast.literal_eval("[" + match.group(2) + "]")
+        source = "[" + match.group(2) + "]"
+        try:
+            constraints = parse_constraints(source)
+        except (SyntaxError, ValueError, AttributeError):
+            logger.warning(
+                "Unable to migrate _sql_constraints, please do it manually:\n%s"
+                % match.group(0)
+            )
+            return match.group(0)
         result = []
-        for name, definition, *messages in constraints:
-            message = messages[0] if messages else ""
+        for name, definition, message in constraints:
             constructor = "Constraint"
-            if message:
-                # format on 2 lines
-                message_repr = json.dumps(
-                    message, ensure_ascii=False
-                )  # so that the message is in double quotes
-                args = f"\n{ind * 2}{definition!r},\n{ind * 2}{message_repr},\n{ind}"
-            elif len(definition) > 60:
-                args = f"\n{ind * 2}{definition!r}"
+            # strings are rendered as literals, other expressions are kept as is
+            if is_str(definition):
+                definition_repr = repr(definition.value)
+                definition_length = len(definition.value)
             else:
-                args = repr(definition)
+                definition_repr = ast.get_source_segment(source, definition)
+                definition_length = len(definition_repr)
+            if message is not None and not (is_str(message) and not message.value):
+                if is_str(message):
+                    # so that the message is in double quotes
+                    message_repr = json.dumps(message.value, ensure_ascii=False)
+                else:
+                    message_repr = ast.get_source_segment(source, message)
+                # format on 2 lines
+                args = f"\n{ind * 2}{definition_repr},\n{ind * 2}{message_repr},\n{ind}"
+            elif definition_length > 60:
+                args = f"\n{ind * 2}{definition_repr}"
+            else:
+                args = definition_repr
             result.append(f"{leading_indent}_{name} = models.{constructor}({args})")
         return "\n".join(result)
 
