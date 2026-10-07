@@ -7,7 +7,7 @@ import os
 from .log import logger
 
 from .config import _MANIFEST_NAMES
-from .tools import _execute_shell
+from .tools import _execute_shell, _run_pre_commit
 
 
 class ModuleMigration:
@@ -44,11 +44,7 @@ class ModuleMigration:
 
         # Run pre-commit before final commit to format any changes made during migration scripts execution
         if os.path.exists(".pre-commit-config.yaml") and self._migration._pre_commit:
-            _execute_shell(
-                "pre-commit run -a",
-                path=self._migration._directory_path,
-                raise_error=False,
-            )
+            _run_pre_commit(self._migration._directory_path, [self._module_name])
 
         self._commit_changes(
             "[MIG] %s: Migration to %s"

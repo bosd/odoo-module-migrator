@@ -2,6 +2,7 @@
 # @author: Sylvain LE GAL (https://twitter.com/legalsylvain)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
+import shlex
 import subprocess
 import re
 import pathlib
@@ -34,6 +35,27 @@ def _execute_shell(shell_command, path=False, raise_error=True):
         return subprocess.check_output(shell_command, shell=True)
     else:
         return subprocess.run(shell_command, shell=True)
+
+
+def _run_pre_commit(directory_path, paths):
+    """Run pre-commit on the files under the given paths (relative to
+    directory_path) instead of the whole repository, which is very slow
+    on large repositories."""
+    # tracked and new files, ignoring the ones excluded by .gitignore
+    output = _execute_shell(
+        "git ls-files --cached --others --exclude-standard -- %s"
+        % " ".join(shlex.quote(str(p)) for p in paths),
+        path=directory_path,
+    )
+    # skip files removed by the migration but still in the git index
+    files = [f for f in output.decode().splitlines() if (directory_path / f).exists()]
+    if not files:
+        return
+    _execute_shell(
+        "pre-commit run --files %s" % " ".join(shlex.quote(f) for f in files),
+        path=directory_path,
+        raise_error=False,
+    )
 
 
 def _read_content(file_path):

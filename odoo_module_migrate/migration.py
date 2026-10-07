@@ -11,7 +11,7 @@ import inspect
 from .config import _AVAILABLE_MIGRATION_STEPS, _MANIFEST_NAMES
 from .exception import ConfigException
 from .log import logger
-from .tools import _execute_shell, _get_latest_version_code
+from .tools import _execute_shell, _get_latest_version_code, _run_pre_commit
 from .module_migration import ModuleMigration
 from .base_migration_script import BaseMigrationScript
 
@@ -110,9 +110,7 @@ class Migration:
 
     def _run_pre_commit(self, module_names):
         logger.info("Run pre-commit")
-        _execute_shell(
-            "pre-commit run -a", path=self._directory_path, raise_error=False
-        )
+        _run_pre_commit(self._directory_path, module_names)
         if self._commit_enabled:
             logger.info("Stage and commit changes done by pre-commit")
             _execute_shell("git add -A", path=self._directory_path)
