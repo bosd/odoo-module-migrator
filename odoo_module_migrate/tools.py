@@ -4,6 +4,8 @@
 
 import subprocess
 import re
+import re._constants as sre_constants
+import re._parser as sre_parse
 import pathlib
 
 from .config import _AVAILABLE_MIGRATION_STEPS
@@ -49,11 +51,72 @@ def _write_content(file_path, content):
     f.close()
 
 
-def _replace_in_file(file_path, replaces, log_message=False):
+def _required_literals(pattern):
+    """Return a tuple of strings, one of which is part of any match of the
+    regular expression `pattern` (a compiled pattern or a string), or None
+    when no such strings can be determined.
+
+    `any(x in text for x in literals)` is a cheap and exact prefilter:
+    when it is False, the pattern can not match the text.
+    """
+    if isinstance(pattern, str):
+        pattern = re.compile(pattern)
+    if pattern.flags & re.IGNORECASE or not isinstance(pattern.pattern, str):
+        return None
+    try:
+        literals = _required_literals_of(
+            sre_parse.parse(pattern.pattern, pattern.flags)
+        )
+    except Exception:
+        return None
+    return tuple(sorted(literals)) if literals else None
+
+
+def _required_literals_of(parsed):
+    # Candidates are sets of strings, one of which must appear in a match.
+    # Keep the most selective one: the one whose shortest string is longest.
+    candidates = []
+    run = ""
+    for op, av in parsed:
+        if op is sre_constants.LITERAL:
+            run += chr(av)
+            continue
+        if run:
+            candidates.append({run})
+            run = ""
+        if op is sre_constants.SUBPATTERN:
+            _group, add_flags, _del_flags, subpattern = av
+            if not add_flags & re.IGNORECASE:
+                candidates.append(_required_literals_of(subpattern))
+        elif op is sre_constants.BRANCH:
+            alternatives = [_required_literals_of(branch) for branch in av[1]]
+            if all(alternatives):
+                candidates.append(set().union(*alternatives))
+        elif op in (sre_constants.MAX_REPEAT, sre_constants.MIN_REPEAT):
+            minimum, _maximum, subpattern = av
+            if minimum >= 1:
+                candidates.append(_required_literals_of(subpattern))
+    if run:
+        candidates.append({run})
+    candidates = [c for c in candidates if c]
+    return max(candidates, key=lambda c: min(map(len, c)), default=None)
+
+
+def _could_match(literals, text):
+    return literals is None or any(literal in text for literal in literals)
+
+
+def _replace_in_file(file_path, replaces, log_message=False, required_literals=None):
+    """Apply the `replaces` {pattern: replacement} on the file content.
+    `required_literals` {pattern: literals} allows to skip the patterns
+    that can not match (see `_required_literals`)."""
     current_text = _read_content(file_path)
     new_text = current_text
+    required_literals = required_literals or {}
 
     for old_term, new_term in replaces.items():
+        if not _could_match(required_literals.get(old_term), new_text):
+            continue
         new_text = re.sub(old_term, new_term or "", new_text)
 
     # Write file if changed

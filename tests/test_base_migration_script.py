@@ -56,7 +56,7 @@ class TestBaseMigrationScript(unittest.TestCase):
         self.assertTrue(xml_only)
 
         script._get_patterns(".xml")
-        py_replaces, _errors, _warnings = script._get_patterns(".py")
+        py_replaces = script._get_patterns(".py")[0]
 
         self.assertEqual(script._TEXT_REPLACES["*"], wildcard)
         py_keys = {pattern.pattern for pattern in py_replaces}

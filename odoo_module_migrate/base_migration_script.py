@@ -167,8 +167,9 @@ class BaseMigrationScript(object):
         self._removed_models = self.handle_removed_models(self._REMOVED_MODELS)
 
     def _get_patterns(self, extension):
-        """Return the compiled (replaces, errors, warnings) to apply on files
-        with the given extension. Computed once per extension."""
+        """Return the compiled (replaces, errors, warnings, required_literals)
+        to apply on files with the given extension. Computed once per
+        extension. See `tools._required_literals`."""
         if extension in self._patterns_by_extension:
             return self._patterns_by_extension[extension]
 
@@ -194,11 +195,14 @@ class BaseMigrationScript(object):
             **renamed_models["warnings"],
             **removed_models["warnings"],
         }
-        patterns = (
-            {re.compile(k): v for k, v in replaces.items()},
-            [(re.compile(k), v) for k, v in errors.items()],
-            [(re.compile(k), v) for k, v in warnings.items()],
-        )
+        replaces = {re.compile(k): v for k, v in replaces.items()}
+        errors = [(re.compile(k), v) for k, v in errors.items()]
+        warnings = [(re.compile(k), v) for k, v in warnings.items()]
+        required_literals = {
+            pattern: tools._required_literals(pattern)
+            for pattern in list(replaces) + [p for p, _ in errors + warnings]
+        }
+        patterns = (replaces, errors, warnings, required_literals)
         self._patterns_by_extension[extension] = patterns
         return patterns
 
@@ -264,21 +268,29 @@ class BaseMigrationScript(object):
             )
             absolute_file_path = os.path.join(root, new_name)
 
-        replaces, errors, warnings = self._get_patterns(extension)
+        replaces, errors, warnings, required_literals = self._get_patterns(extension)
 
         # Operate changes in the file (replacements, removals)
         new_text = tools._replace_in_file(
-            absolute_file_path, replaces, "Change file content of %s" % filename
+            absolute_file_path,
+            replaces,
+            "Change file content of %s" % filename,
+            required_literals=required_literals,
         )
+
+        def matches(pattern):
+            return tools._could_match(
+                required_literals[pattern], new_text
+            ) and pattern.search(new_text)
 
         # Display errors if the new content contains some obsolete
         # pattern
         for pattern, error_message in errors:
-            if pattern.search(new_text):
+            if matches(pattern):
                 logger.error(error_message + "\nFile " + os.path.join(root, filename))
 
         for pattern, warning_message in warnings:
-            if pattern.search(new_text):
+            if matches(pattern):
                 logger.warning(warning_message + ". File " + root + os.sep + filename)
 
     def handle_removed_fields(self, removed_fields):
